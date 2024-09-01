@@ -1,0 +1,1212 @@
+---
+title: "Neural Network Approach to Employee Attrition Analysis"
+author: "Dimas Aditya"
+date: 
+output: 
+  html_document:
+    theme: flatly
+    toc: yes
+    toc_float: 
+      collapsed: true
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+library(png)
+
+
+img <- readPNG("data_input/Employee.png")
+
+scale_factor <- 1.5
+
+
+img_width <- 711
+img_height <- 463
+
+
+new_width <- img_width * scale_factor
+new_height <- img_height * scale_factor
+
+
+plot_width <- 711
+plot_height <- 463
+
+
+left <- (plot_width - new_width) / 2
+right <- left + new_width
+bottom <- (plot_height - new_height) / 2
+top <- bottom + new_height
+
+
+plot.new()
+
+
+plot.window(xlim = c(0, plot_width), ylim = c(0, plot_height), asp = 1)
+
+
+rasterImage(img, left, bottom, right, top, interpolate = FALSE)
+
+```
+
+# Introduction
+# Description
+The dataset under examination comprises 1,470 employees and includes 35 attributes that offer insights into various factors influencing employee attrition. Key variables encompass demographic information (such as age, gender, and marital status), job-related metrics (including job role, level, and satisfaction), and compensation details (such as monthly income and hourly rate). Additionally, the dataset captures factors related to employee work environment and career progression, including distance from home, job involvement, and years with the current manager. This rich dataset is instrumental in understanding the dynamics of employee turnover and identifying critical factors that contribute to attrition, enabling targeted interventions to improve employee retention and organizational stability.
+
+Source: https://www.kaggle.com/pavansubhasht/ibm-hr-analytics-attrition-dataset
+
+# Business Question
+1. What is the breakdown of distance from home by job role and attrition?
+2. How does the average monthly income compare across different education levels and attrition?
+
+# Variable Description
+
+```{r echo=FALSE}
+library(DT)
+var <- read.csv("data_input/Var.csv")
+datatable(var, options = list(
+  scrollX = TRUE, pageLength = 10))
+```
+
+
+# 1. Data Preparation
+## 1.1 Prerequisites
+## 1.2 Importing Libraries
+
+```{r}
+set.seed(314)
+library(tidyverse)
+library(factoextra) 
+library(FactoMineR) 
+library(ggiraphExtra)
+library(rsample)
+library(caret) 
+library(keras) 
+```
+
+## 1.3 Importing Dataset
+
+```{r}
+employee <- read.csv("data_input/HRA.csv", stringsAsFactors = T)
+head(employee)
+```
+## 1.4 Data Inspection
+```{r}
+glimpse(employee)
+```
+
+## 1.5 Data Types
+
+```{r}
+employee_clean <- employee %>% 
+  select(-c("EmployeeCount", "Over18", "StandardHours", "EmployeeNumber"))
+
+unique(employee$EmployeeCount)
+```
+
+
+
+```{r}
+unique(employee$JobInvolvement)
+```
+
+```{r}
+unique(employee$JobLevel)
+```
+
+```{r}
+unique(employee$Over18)
+```
+
+```{r}
+summary(employee)
+```
+# 2. Handling Missing Values
+## 2.1 Missing Value 
+```{r}
+colSums(is.na(employee_clean))
+```
+
+# 3. Data Wrangling
+## 3.1 Data Transformation
+
+```{r}
+employee_num <- employee_clean %>% 
+  select_if(is.numeric)
+employee_num_scaled <- scale(employee_num)
+```
+
+# 4. Exploratory Data Analysis
+## 4.1 Base PCA
+
+```{r}
+pca <- prcomp(x = employee_num, scale. = T)
+plot(pca, label = T)
+```
+
+## 4.2 Biplot
+
+```{r}
+biplot(x = prcomp(employee_num %>% scale() %>% head(100)), cex=1.4)
+```
+
+## 4.3 Contribution
+
+```{r}
+fviz_contrib( 
+  X = prcomp(employee_num %>% scale() %>% head(100)), 
+  choice = "var",
+  axes = 1
+)
+```
+## 4.4 FactoMineR
+
+```{r}
+qualivar <- c(2,3,5,8,10,14,16,20)
+quantivar <- c(1:30)[!c(1:30) %in% qualivar]
+
+employee_pca <- PCA(X = employee_clean,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 23,
+    graph = F)
+
+head(employee_pca$ind$coord)
+```
+
+## 4.5 PCA Individuals
+
+```{r}
+plot.PCA(x = employee_pca,
+         choix = "ind",
+         select = "contrib10",
+         invisible = "quali")
+
+```
+
+## 4.6 PCA Variables
+
+```{r}
+plot.PCA(x = employee_pca, choix = "var", label = "all")
+```
+
+## 4.7 Variable Contribution 
+
+```{r}
+dim <- dimdesc(employee_pca)
+
+as.data.frame(dim$Dim.1$quanti)
+```
+
+
+
+
+```{r}
+as.data.frame(dim$Dim.2$quanti)
+```
+
+## 4.8  PCA Eigenvalues
+
+```{r}
+employee_pca$eig
+```
+
+# 5. Neural Network
+## 5.1 Proportion Data
+
+```{r}
+prop.table(table(employee_clean$Attrition))
+```
+
+## 5.2 Upsampling and Downsampling
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+
+employee_down <- downSample(x = employee_clean %>% select(-Attrition),
+                                        y =  employee_clean$Attrition,
+                                        yname = "Attrition")
+
+prop.table(table(employee_down$Attrition))
+```
+
+```{r}
+employee_up <- upSample(x = employee_clean %>% select(-Attrition),
+                                        y =  employee_clean$Attrition,
+                                        yname = "Attrition")
+
+prop.table(table(employee_up$Attrition))
+```
+
+# 6. Cross-Validation
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+
+
+emp_index <- initial_split(employee_clean, prop = 0.8, strata = "Attrition")
+emp_train <- training(emp_index)
+emp_test <- testing(emp_index)
+
+
+emp_index <- initial_split(employee_down, prop = 0.8, strata = "Attrition")
+emp_train_down <- training(emp_index)
+emp_test_down <- testing(emp_index)
+
+
+emp_index <- initial_split(employee_up, prop = 0.8, strata = "Attrition")
+emp_train_up <- training(emp_index)
+emp_test_up <- testing(emp_index)
+```
+
+# 7. Model Building Section A
+## 7.1 All Pred, No Down, No Up
+### 7.1.1 Pre-processing
+
+```{r}
+emp_train_x <-
+  emp_train %>% 
+  select(-Attrition)
+
+emp_test_x <-
+  emp_test %>% 
+  select(-Attrition)
+
+emp_train_y <-
+  emp_train %>% 
+  select(Attrition)
+
+emp_test_y <-
+  emp_test %>% 
+  select(Attrition)
+```
+
+
+
+```{r}
+# glimpse(emp_train_x)
+# emp_train_x[,c(2,4,7,9,13,15,19)]
+emp_train_x_sc <-
+  as.data.frame(model.matrix(~., data = emp_train_x)) %>% 
+  select(-"(Intercept)") %>% 
+  scale()
+
+emp_test_x_sc <- 
+  as.data.frame(model.matrix(~., data = emp_test_x)) %>% 
+  select(-"(Intercept)") %>% 
+  scale()
+
+emp_train_x_keras <- 
+  emp_train_x_sc %>% 
+  array_reshape(dim = dim(emp_train_x_sc))
+
+emp_test_x_keras <- 
+  emp_test_x_sc %>% 
+  array_reshape(dim = dim(emp_test_x_sc))
+
+emp_train_y_keras <- 
+  emp_train_y %>%
+  mutate(Attrition = ifelse(Attrition == "Yes",1,0)) %>% 
+  as.matrix() %>%
+  to_categorical()
+
+# emp_test_y_keras <- 
+#   emp_test_y %>%
+#   mutate(Attrition = ifelse(Attrition == "Yes",1,0)) %>% 
+#   as.matrix() %>%
+#   to_categorical()
+```
+
+### 7.1.2 Model Fitting
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+initializer <- initializer_random_normal(seed = 314)
+
+model_nn <- keras_model_sequential()
+
+model_nn %>% 
+  layer_dense(input_shape = 44, 
+              units =  128,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden1") %>% 
+  layer_dense(units = 64,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden2") %>% 
+  layer_dense(units = 32, 
+              activation = "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+            name = "hidden3") %>% 
+  layer_dense(units =  2,
+              activation = "sigmoid",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name = "output") 
+
+model_nn %>%
+  compile(
+    loss =  "binary_crossentropy",
+    optimizer = optimizer_adam(learning_rate = 0.001),
+    metrics =  "accuracy"
+  )
+
+history <- model_nn %>% 
+           fit(emp_train_x_keras,
+               emp_train_y_keras,
+               epoch = 15,
+               batch_size= 200)
+
+summary(model_nn)
+```
+
+###  7.1.3 Visualization Plot 1
+
+```{r}
+plot(history)
+```
+
+###  7.1.4 Evaluation
+
+```{r}
+pred_nn_test <- predict(model_nn, emp_test_x_keras)
+
+
+pred_nn_test_label <- 
+pred_nn_test %>% 
+  as.data.frame() %>% 
+  `colnames<-`(0:1) %>% 
+  transmute(Class = as.factor(ifelse(names(.)[max.col(.)] == "1","Yes","No")))
+
+confusionMatrix(data = pred_nn_test_label$Class, reference = emp_test_y$Attrition, positive = "Yes")
+```
+
+###  7.1.5 Summary Evaluation 
+
+> 1. The summary data indicates an accuracy of 86.78%, which is quite high. However, given the imbalanced nature of the dataset, this accuracy might be misleading. In scenarios where the model could predict all data points as belonging to the majority class, the accuracy would still appear good, but the true positives would be skewed. This current model's accuracy is slightly lower than the pre-evaluation accuracy of 90%, suggesting it might be a reasonable fit.
+
+> 2. Sensitivity / Recall: 41.67%
+Recall measures the proportion of actual positives (employees who will leave) that were correctly identified by the model. A Recall of 41.67% suggests that the model only caught 41.67% of the employees who were actually at risk of leaving. This could be problematic if the goal is to identify as many potential attritors as possible.
+
+> 3. Pos Pred Value / Precision: 64.52%
+Precision indicates the proportion of positive predictions (employees predicted to leave) that were actually correct. With a Precision of 64.52%, the model is relatively accurate when it predicts that an employee will leave, but it does mean that about 35.48% of the positive predictions are incorrect.
+
+Interpretation:
+While the accuracy is high, this might give a false sense of performance due to data imbalance. The lower Recall indicates that the model misses a significant portion of employees who are at risk of leaving, and the moderate Precision shows that there's still a considerable rate of false positives.
+
+While the model demonstrates high accuracy, its performance on Recall and Precision suggests room for improvement. The low Recall indicates that the model misses a substantial number of employees who are at risk of leaving, which is crucial for preventive measures. The moderate Precision shows that the model has a fair accuracy in predicting who will leave but still has a notable rate of incorrect predictions. To enhance the model's utility, especially in a business context focused on attrition management, efforts should be directed toward improving both Recall and Precision. This will ensure the model not only performs well overall but also provides reliable predictions for actionable insights.
+
+## 7.2 All Pred, Downsampling
+### 7.2.1 Pre Processing
+
+```{r}
+emp_train_down_x <-
+  emp_train_down %>% 
+  select(-Attrition)
+
+emp_test_down_x <-
+  emp_test_down %>% 
+  select(-Attrition)
+
+emp_train_down_y <-
+  emp_train_down %>% 
+  select(Attrition)
+
+emp_test_down_y <-
+  emp_test_down %>% 
+  select(Attrition)
+```
+
+```{r}
+# glimpse(emp_train_x)
+# emp_train_x[,c(2,4,7,9,13,15,19)]
+
+emp_train_down_x_sc <- as.data.frame(model.matrix(~., data = emp_train_down_x)) %>% 
+  select(-"(Intercept)") %>% 
+  scale()
+
+emp_test_down_x_sc <- 
+  as.data.frame(model.matrix(~., data = emp_test_down_x)) %>% 
+  select(-"(Intercept)") %>% 
+  scale()
+
+emp_train_down_x_keras <- 
+  emp_train_down_x_sc %>% 
+  array_reshape(dim = dim(emp_train_down_x_sc))
+
+emp_test_down_x_keras <- 
+  emp_test_down_x_sc %>% 
+  array_reshape(dim = dim(emp_test_down_x_sc))
+
+emp_train_down_y_keras <- 
+  emp_train_down_y %>%
+  mutate(Attrition = ifelse(Attrition == "Yes",1,0)) %>% 
+  as.matrix() %>%
+  to_categorical()
+
+# emp_test_y_keras <-
+#   emp_test_y %>%
+#   mutate(Attrition = ifelse(Attrition == "Yes",1,0)) %>%
+#   as.matrix() %>%
+#   to_categorical()
+```
+
+### 7.2.2 Model Fitting
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+initializer <- initializer_random_normal(seed = 314)
+
+model_nn_down <- keras_model_sequential()
+
+model_nn_down %>% 
+  layer_dense(input_shape = 44, 
+              units =  128,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden1") %>% 
+  layer_dense(units = 64,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden2") %>% 
+  layer_dense(units = 32, 
+              activation = "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+            name = "hidden3") %>% 
+  layer_dense(units =  2,
+              activation = "sigmoid",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name = "output") 
+
+model_nn_down %>%
+  compile(
+    loss =  "binary_crossentropy",
+    optimizer = optimizer_adam(learning_rate = 0.001),
+    metrics =  "accuracy"
+  )
+
+history_down <- model_nn_down %>% 
+           fit(emp_train_down_x_keras,
+               emp_train_down_y_keras,
+               epoch = 20,
+               batch_size= 100)
+
+summary(model_nn_down)
+```
+
+###  7.2.3 Visualization Plot 2
+
+```{r}
+plot(history)
+```
+
+###  7.2.4 Evaluation
+
+```{r}
+pred_nn_test_down <- predict(model_nn_down, emp_test_down_x_keras)
+
+
+pred_nn_test_down_label <- 
+pred_nn_test_down %>% 
+  as.data.frame() %>% 
+  `colnames<-`(0:1) %>% 
+  transmute(Class = as.factor(ifelse(names(.)[max.col(.)] == "1","Yes","No")))
+
+confusionMatrix(data = pred_nn_test_down_label$Class, reference = emp_test_down_y$Attrition, positive = "Yes")
+```
+
+###  7.2.5 Summary Evaluation
+
+> 1. The summary data indicates an accuracy of 77.08%, which suggests the model correctly predicted the class (whether an employee will leave or stay) 77.08% of the time. This accuracy, while decent, is lower than what was achieved during training (86.24%), indicating that the model might be slightly overfitting.
+
+> 2. Sensitivity / Recall: 77.08%
+Recall measures the proportion of actual positives (employees who will leave) that were correctly identified by the model. A Recall of 77.08% means the model is fairly effective at identifying employees who are at risk of leaving.
+
+> 3. Pos Pred Value / Precision: 77.08%
+Precision indicates the proportion of positive predictions (employees predicted to leave) that were actually correct. With a Precision of 77.08%, the model is relatively reliable in its predictions of employee attrition, though there's still a chance of false positives.
+
+Interpretation:
+While the accuracy is reasonable, it is important to note that it has dropped from the training phase, which could signal overfitting. The Recall and Precision are balanced, both at 77.08%, which is decent but might need improvement depending on the business needs.
+
+Overall, the model performs adequately with balanced metrics, but given that the Accuracy during testing is notably lower than during training, there's a slight concern of overfitting. Additional tuning might be necessary to achieve a model that consistently performs well across Accuracy, Recall, and Precision, ideally targeting at least 80% in all metrics.
+
+## 7.3 All Pred, Upsampling
+### 7.3.1 Pre-Processing
+
+```{r}
+emp_train_up_x <-
+  emp_train_up %>% 
+  select(-Attrition)
+
+emp_test_up_x <-
+  emp_test_up %>% 
+  select(-Attrition)
+
+emp_train_up_y <-
+  emp_train_up %>% 
+  select(Attrition)
+
+emp_test_up_y <-
+  emp_test_up %>% 
+  select(Attrition)
+```
+
+
+```{r}
+# glimpse(emp_train_x)
+# emp_train_x[,c(2,4,7,9,13,15,19)]
+emp_train_up_x_sc <-
+  as.data.frame(model.matrix(~., data = emp_train_up_x)) %>% 
+  select(-"(Intercept)") %>% 
+  scale()
+
+emp_test_up_x_sc <- 
+  as.data.frame(model.matrix(~., data = emp_test_up_x)) %>% 
+  select(-"(Intercept)") %>% 
+  scale()
+
+emp_train_up_x_keras <- 
+  emp_train_up_x_sc %>% 
+  array_reshape(dim = dim(emp_train_up_x_sc))
+
+emp_test_up_x_keras <- 
+  emp_test_up_x_sc %>% 
+  array_reshape(dim = dim(emp_test_up_x_sc))
+
+emp_train_up_y_keras <- 
+  emp_train_up_y %>%
+  mutate(Attrition = ifelse(Attrition == "Yes",1,0)) %>% 
+  as.matrix() %>%
+  to_categorical()
+
+# emp_test_y_keras <- 
+#   emp_test_y %>%
+#   mutate(Attrition = ifelse(Attrition == "Yes",1,0)) %>% 
+#   as.matrix() %>%
+#   to_categorical()
+```
+
+### 7.3.2 Model Fitting
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+initializer <- initializer_random_normal(seed = 314)
+
+model_nn_up <- keras_model_sequential()
+
+model_nn_up %>% 
+  layer_dense(input_shape = 44, 
+              units =  128,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden1") %>% 
+  layer_dense(units = 64,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden2") %>% 
+  layer_dense(units = 32, 
+              activation = "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+            name = "hidden3") %>% 
+  layer_dense(units =  2,
+              activation = "sigmoid",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name = "output") 
+
+model_nn_up %>%
+  compile(
+    loss =  "binary_crossentropy",
+    optimizer = optimizer_adam(learning_rate = 0.001),
+    metrics =  "accuracy"
+  )
+
+history_up <- model_nn_up %>% 
+           fit(emp_train_up_x_keras,
+               emp_train_up_y_keras,
+               epoch = 20,
+               batch_size= 250)
+
+summary(model_nn_up)
+```
+
+### 7.3.3 Visualization Plot 3
+
+```{r}
+plot(history)
+```
+
+### 7.3.4 Evaluation
+
+```{r}
+pred_nn_test_up <- predict(model_nn_up, emp_test_up_x_keras)
+
+
+pred_nn_test_up_label <- 
+pred_nn_test_up %>% 
+  as.data.frame() %>% 
+  `colnames<-`(0:1) %>% 
+  transmute(Class = as.factor(ifelse(names(.)[max.col(.)] == "1","Yes","No")))
+
+confusionMatrix(data = pred_nn_test_up_label$Class, reference = emp_test_up_y$Attrition, positive = "Yes")
+```
+
+### 7.3.5 Summary Evaluation
+
+> 1. The summary data shows an accuracy of 80.57%, indicating that the model correctly predicted the class (whether an employee will leave or stay) 80.57% of the time. This is a good accuracy score, though it is worth noting that it might not tell the full story in isolation, especially if the data is imbalanced.
+
+> 2. Sensitivity / Recall: 80.57%
+Recall measures the proportion of actual positives (employees who will leave) that were correctly identified by the model. With a Recall of 80.57%, the model is effective at catching a high proportion of employees who are at risk of leaving.
+
+> 3, Pos Pred Value / Precision: 80.57%
+Precision indicates the proportion of positive predictions (employees predicted to leave) that were actually correct. A Precision of 80.57% suggests that when the model predicts an employee will leave, it is quite accurate, though there's still a 19.43% chance of false positives.
+
+Interpretation:
+The accuracy is solid, and both Recall and Precision are well-balanced, each at 80.57%. However, these metrics are slightly lower compared to other models, indicating that this model might be a bit overfitted, although it remains just-fit for the task.
+
+Overall, the model performs adequately with a balanced Accuracy, Recall, and Precision. However, these metrics are slightly lower than what might be ideal, suggesting a potential for overfitting. Further tuning could help improve the model’s robustness, aiming for all metrics to reach or exceed 80% consistently, ensuring it is both reliable and useful for decision-making in HR.
+
+## 7.4 . Model Building Section A Summary 
+
+> Model All Pred, No Down, No Up
+
+Accuracy: 86.78% (slightly lower than the pre-evaluation accuracy of 90%)
+Recall: 41.67%
+Precision: 64.52%
+Analysis:
+
+Accuracy: High accuracy might be misleading, especially if the dataset is imbalanced. The model could be achieving high accuracy by predominantly predicting the majority class.
+Recall: At 41.67%, the recall is relatively low, indicating that the model misses a significant portion of employees who are at risk of leaving.
+Precision: At 64.52%, the precision is decent, but there is still a notable rate of false positives.
+Conclusion: This model may not be fully overfitted, but the high accuracy with low recall suggests it may be biased towards the majority class. Further adjustments are needed to improve recall.
+
+> Model All Pred, Downsampling
+
+Accuracy: 77.08% (lower than the training accuracy of 86.24%)
+Recall: 77.08%
+Precision: 77.08%
+Analysis:
+
+Accuracy: The drop in accuracy from training to evaluation indicates potential overfitting, where the model performs well on training data but less so on test data.
+Recall and Precision: Both metrics are balanced and fairly high, indicating that the model is effective in identifying and predicting employee attrition.
+Conclusion: This model shows signs of overfitting due to the drop in accuracy from training to test data. However, the balanced recall and precision suggest the model is performing well in identifying attrition but may benefit from further tuning.
+
+> Model All Pred, Upsampling
+
+Accuracy: 80.57%
+Recall: 80.57%
+Precision: 80.57%
+Analysis:
+
+Accuracy: A good accuracy score that is relatively stable, suggesting the model may be more robust across different datasets compared to the other models.
+Recall and Precision: Both metrics are high and balanced, indicating that the model effectively detects employees at risk of leaving and makes accurate predictions.
+Conclusion: This model appears less prone to overfitting compared to the first two models, as accuracy, recall, and precision are balanced and consistent. It is still a good fit for practical use, though there is room for improvement.
+
+> Conclusion
+
+Model All Pred, No Down, No Up : Needs further adjustment, especially to improve recall. Potential overfitting should be evaluated further.
+Model All Pred, Downsampling : Shows signs of overfitting due to the drop in accuracy from training to testing. Additional tuning might be needed to ensure consistent performance.
+Model All Pred, Upsampling : Seems more stable and less prone to overfitting compared to the other models. It is relatively reliable but could be fine-tuned for even better performance.
+
+
+# 8. Model Building Section B
+
+Dimensionality reduction will be performed using Principal Component Analysis (PCA), retaining only those components that explain at least 85% of the variance. A Neural Network will then be trained using a reduced set of predictors. This new model will use the original, imbalanced target variable.
+
+## 8.1 Model No Down, No Up
+### 8.1.1 Pre-Processing
+
+```{r}
+glimpse(emp_train_x)
+```
+
+```{r}
+qualivar <- c(2,4,7,9,13,15,19)
+quantivar <- c(1:30)[!c(1:30) %in% qualivar]
+
+emp_pca_train_x_keep85pc <- PCA(X = emp_train_x,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 23,
+    graph = F)
+
+emp_pca_train_x_keep85pc$eig 
+```
+
+```{r}
+emp_pca_train_x_keep85pc <- PCA(X = emp_train_x,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 15,
+    graph = F)
+```
+
+```{r}
+emp_pca_test_x_keep85pc <- predict(emp_pca_train_x_keep85pc, emp_test_x)
+glimpse(emp_pca_test_x_keep85pc)
+```
+
+### 8.1.2 Model Fitting
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+initializer <- initializer_random_normal(seed = 314)
+
+model_nn_pca85 <- keras_model_sequential()
+
+model_nn_pca85 %>% 
+  layer_dense(input_shape = 15, 
+              units =  128,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden1") %>% 
+  layer_dense(units = 64,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden2") %>% 
+  layer_dense(units = 32, 
+              activation = "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+            name = "hidden3") %>% 
+  layer_dense(units =  2,
+              activation = "sigmoid",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name = "output") 
+
+model_nn_pca85 %>%
+  compile(
+    loss =  "binary_crossentropy",
+    optimizer = optimizer_adam(learning_rate = 0.001),
+    metrics =  "accuracy"
+  )
+
+history <- model_nn_pca85 %>% 
+           fit(emp_pca_train_x_keep85pc$ind$coord,
+               emp_train_y_keras,
+               epoch = 15,
+               batch_size= 200)
+
+summary(model_nn_pca85)
+```
+### 8.1.3 Visualization Plot 1
+
+```{r}
+plot(history)
+```
+### 8.1.4 Evaluation
+
+```{r}
+pred_nn_pca85_test <- predict(model_nn_pca85, emp_pca_test_x_keep85pc$coord)
+
+
+pred_nn_pca85_test_label <- 
+pred_nn_pca85_test %>% 
+  as.data.frame() %>% 
+  `colnames<-`(0:1) %>% 
+  transmute(Class = as.factor(ifelse(names(.)[max.col(.)] == "1","Yes","No")))
+
+confusionMatrix(data = pred_nn_pca85_test_label$Class, reference = emp_test_y$Attrition, positive = "Yes")
+```
+
+### 8.1.5 Summary Evaluation
+
+> 1. The summary data indicates an accuracy of 86.1%, which suggests that the model correctly predicted whether an employee will leave or stay 86.1% of the time. This accuracy is consistent with other models, indicating that the model is not overfitting and is just-fit for the data.
+
+> 2. Sensitivity / Recall: 31.25%
+Recall measures the proportion of actual positives (employees who will leave) that the model correctly identified. A Recall of 31.25% is relatively low, meaning the model misses a significant portion of employees who are actually at risk of leaving.
+
+> 3. Pos Pred Value / Precision: 65.22%
+Precision indicates the proportion of positive predictions (employees predicted to leave) that were actually correct. With a Precision of 65.22%, the model is moderately reliable when predicting employee attrition, though it still produces a substantial number of false positives.
+
+Interpretation:
+Accuracy: The accuracy of 86.1% is similar to other models, suggesting that the model is not overfitting and fits the data well.
+Recall and Precision: Both Recall and Precision are notably low. The low Recall is particularly concerning if the objective is to identify as many at-risk employees as possible.
+
+While the model’s accuracy is high and consistent, the significant drop in Recall and Precision is a major drawback. Given the low performance in these areas, it is not recommended to use this model further. The model may need further tuning or a different approach to better balance the metrics, particularly improving Recall, to make it more reliable for practical decision-making in HR.
+
+## 8.2 Model Down sampling
+### 8.2.1 Pre Processing
+
+```{r}
+emp_pca_train_down_x_keep85pc <- PCA(X = emp_train_down_x,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 23,
+    graph = F)
+
+emp_pca_train_down_x_keep85pc$eig 
+```
+
+```{r}
+emp_pca_train_down_x_keep85pc <- PCA(X = emp_train_down_x,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 14,
+    graph = F)
+```
+
+```{r}
+emp_pca_test_down_x_keep85pc <- predict(emp_pca_train_down_x_keep85pc, emp_test_down_x)
+glimpse(emp_pca_test_down_x_keep85pc)
+```
+
+### 8.2.2 Model Fitting
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+initializer <- initializer_random_normal(seed = 314)
+
+model_nn_down_pca85 <- keras_model_sequential()
+
+model_nn_down_pca85 %>% 
+  layer_dense(input_shape = 14, 
+              units =  128,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden1") %>% 
+  layer_dense(units = 64,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden2") %>% 
+  layer_dense(units = 32, 
+              activation = "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+            name = "hidden3") %>% 
+  layer_dense(units =  2,
+              activation = "sigmoid",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name = "output") 
+
+model_nn_down_pca85 %>%
+  compile(
+    loss =  "binary_crossentropy",
+    optimizer = optimizer_adam(learning_rate = 0.05),
+    metrics =  "accuracy"
+  )
+
+history <- model_nn_down_pca85 %>% 
+           fit(emp_pca_train_down_x_keep85pc$ind$coord,
+               emp_train_down_y_keras,
+               epoch = 15,
+               batch_size= 150)
+
+summary(model_nn_down_pca85)
+```
+### 8.2.3 Visualization Plot 2
+
+```{r}
+plot(history)
+```
+
+### 8.2.4 Evaluation
+
+```{r}
+pred_nn_down_pca85_test <- predict(model_nn_down_pca85, emp_pca_test_down_x_keep85pc$coord)
+# head(pred_nn_test)
+
+pred_nn_down_pca85_test_label <- 
+pred_nn_down_pca85_test %>% 
+  as.data.frame() %>% 
+  `colnames<-`(0:1) %>% 
+  transmute(Class = as.factor(ifelse(names(.)[max.col(.)] == "1","Yes","No")))
+
+confusionMatrix(data = pred_nn_down_pca85_test_label$Class, reference = emp_test_down_y$Attrition, positive = "Yes")
+```
+
+### 8.2.5 Summary Evaluation
+
+> 1. The summary data indicates an accuracy of 67.71%, meaning that the model correctly predicted the class (whether an employee will leave or stay) 67.71% of the time. This accuracy is lower compared to other models, suggesting that the model may not be as effective in predicting employee attrition.
+
+> 2. Sensitivity / Recall: 62.50%
+Recall measures the proportion of actual positives (employees who will leave) that the model correctly identified. A Recall of 62.50% is moderate, indicating that the model identifies a significant portion of at-risk employees but still misses some.
+
+> 3. Pos Pred Value / Precision: 69.77%
+Precision indicates the proportion of positive predictions (employees predicted to leave) that were actually correct. With a Precision of 69.77%, the model is reasonably reliable when predicting employee attrition, though it still produces some false positives.
+
+Interpretation:
+Accuracy: The model's accuracy of 67.71% is lower than other models, suggesting that it may not be as effective for predicting employee attrition.
+Recall: The Recall of 62.50% is better than some other models, meaning it identifies a fair number of at-risk employees.
+Precision: The Precision of 69.77% is reasonable, showing that the model is fairly accurate when it predicts an employee will leave.
+
+While the model's metrics are generally lower compared to other models, the Recall and Precision are better than those of models without any sampling adjustments. However, the lower overall accuracy indicates that further improvements may be needed. It would be beneficial to explore additional model adjustments or different approaches to enhance performance across all metrics.
+
+
+## 8.3 Model Up Sampling
+### 8.3.1 Pre Processing
+```{r}
+emp_pca_train_up_x_keep85pc <- PCA(X = emp_train_up_x,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 23,
+    graph = F)
+
+emp_pca_train_up_x_keep85pc$eig
+```
+
+```{r}
+emp_pca_train_up_x_keep85pc <- PCA(X = emp_train_up_x,
+    scale.unit = T,
+    quali.sup = qualivar,
+    ncp = 14,
+    graph = F)
+```
+
+```{r}
+emp_pca_test_up_x_keep85pc <- predict(emp_pca_train_up_x_keep85pc, emp_test_up_x)
+glimpse(emp_pca_test_up_x_keep85pc)
+```
+
+### 8.3.2 Model Fitting
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(314)
+initializer <- initializer_random_normal(seed = 314)
+
+model_nn_up_pca85 <- keras_model_sequential()
+
+model_nn_up_pca85 %>% 
+  layer_dense(input_shape = 14, 
+              units =  128,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden1") %>% 
+  layer_dense(units = 64,
+              activation =  "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name =  "hidden2") %>% 
+  layer_dense(units = 32, 
+              activation = "tanh",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+            name = "hidden3") %>% 
+  layer_dense(units =  2,
+              activation = "sigmoid",
+              bias_initializer = initializer,
+              kernel_initializer = initializer,
+              name = "output") 
+
+model_nn_up_pca85 %>%
+  compile(
+    loss =  "binary_crossentropy",
+    optimizer = optimizer_adam(learning_rate = 0.01),
+    metrics =  "accuracy"
+  )
+
+history <- model_nn_up_pca85 %>% 
+           fit(emp_pca_train_up_x_keep85pc$ind$coord,
+               emp_train_up_y_keras,
+               epoch = 25,
+               batch_size= 150)
+
+summary(model_nn_up_pca85)
+```
+
+### 8.3.3 Visualization Plot 3
+
+```{r}
+plot(history)
+```
+
+### 8.3.4 Evaluation
+
+```{r}
+pred_nn_up_pca85_test <- predict(model_nn_up_pca85, emp_pca_test_up_x_keep85pc$coord)
+
+
+pred_nn_up_pca85_test_label <- 
+pred_nn_up_pca85_test %>% 
+  as.data.frame() %>% 
+  `colnames<-`(0:1) %>% 
+  transmute(Class = as.factor(ifelse(names(.)[max.col(.)] == "1","Yes","No")))
+
+confusionMatrix(data = pred_nn_up_pca85_test_label$Class, reference = emp_test_up_y$Attrition, positive = "Yes")
+```
+
+### 8.3.5 Summary Evaluation
+
+
+Here's a summary based on the provided data:
+
+The model's performance metrics are as follows:
+
+> 1. Accuracy: 79.76%
+The model correctly predicted the class (whether an employee will leave or stay) 79.76% of the time. This accuracy is solid and indicates good overall performance.
+
+> 2. Sensitivity / Recall: 77.73%
+Recall measures the proportion of actual positives (employees who will leave) that the model correctly identified. With a Recall of 77.73%, the model identifies a substantial portion of at-risk employees but still misses some.
+
+> 3. Pos Pred Value / Precision: 81.01%
+Precision indicates the proportion of positive predictions (employees predicted to leave) that were actually correct. With a Precision of 81.01%, the model is quite reliable when predicting employee attrition, with a relatively low rate of false positives.
+
+Interpretation:
+Accuracy: The model's Accuracy of 79.76% reflects a strong performance, indicating it is generally effective in predicting employee attrition.
+Recall: The Recall of 77.73% is high, suggesting that the model successfully identifies a large proportion of at-risk employees.
+Precision: The Precision of 81.01% shows that when the model predicts attrition, it is usually correct, minimizing false positives.
+
+This model consistently achieves high metrics across Accuracy, Recall, and Precision, making it one of the best models evaluated. Although the training Accuracy was exceptionally high at 97%, indicating some overfitting, the model remains effective with a strong performance on unseen data. It is a robust choice for predicting employee attrition, balancing high Recall and Precision with solid overall Accuracy.
+
+## 8.4 Model Building Section B Summary 
+
+> Model No Down No Up
+
+Accuracy: 86.1%
+Recall: 31.25%
+Precision: 65.22%
+Analysis:
+
+Accuracy: This model achieves high accuracy, which suggests it fits the data well. However, high accuracy might be misleading if the dataset is imbalanced.
+Recall: The Recall is relatively low at 31.25%, indicating that the model misses a significant portion of employees who are at risk of leaving.
+Precision: Precision is moderate at 65.22%, meaning the model is somewhat reliable in predicting attrition but still has a considerable rate of false positives.
+Conclusion: Despite high accuracy, the model’s low recall and moderate precision are concerning. This model may not be ideal for practical use due to its poor performance in identifying at-risk employees. Further adjustments or a different approach might be necessary.
+
+> Model Down Sampling
+
+Accuracy: 67.71%
+Recall: 62.50%
+Precision: 69.77%
+Analysis:
+
+Accuracy: This model’s accuracy is lower than the other models, suggesting it may not be as effective in predicting employee attrition.
+Recall: With a Recall of 62.50%, the model identifies a significant portion of at-risk employees but still misses some.
+Precision: Precision is reasonable at 69.77%, indicating that the model is fairly accurate in its predictions but still has some false positives.
+Conclusion: This model has a lower accuracy but better recall and precision compared to models with no sampling adjustments. Further improvements might be needed to enhance overall performance, but it is better at identifying at-risk employees than Model 8.1.5.
+
+> Model Up Sampling
+
+Accuracy: 79.76%
+Recall: 77.73%
+Precision: 81.01%
+Analysis:
+
+Accuracy: The accuracy is strong at 79.76%, indicating good overall performance.
+Recall: High Recall at 77.73% shows that the model is effective at identifying a large proportion of at-risk employees.
+Precision: Precision is high at 81.01%, suggesting that the model is reliable in its predictions with a relatively low rate of false positives.
+Conclusion: This model performs well across all metrics, with balanced and high values for accuracy, recall, and precision. It is a robust choice for predicting employee attrition and seems to be the best-performing model among the three.
+
+> Conclusion
+
+Model No Down No Up : High accuracy but low recall and moderate precision make this model less suitable for practical use. Further tuning is needed.
+Model Down Sampling : Lower accuracy with better recall and precision than some other models, but still requires improvements for better performance.
+Model Up Sampling : Consistently high across accuracy, recall, and precision, making it the most robust and effective model.
+
+
+# 10. Conclusion & Business Recommendation
+
+Best Model: Model Section B - Model Up Samling
+
+Accuracy: 79.76%
+Sensitivity / Recall: 77.73%
+Precision: 81.01%
+
+> Interpretation:
+
+The accuracy of 79.76% reflects solid overall performance. The high Recall of 77.73% indicates that the model successfully identifies a substantial portion of at-risk employees, while the Precision of 81.01% shows it is quite reliable in predicting attrition with a relatively low rate of false positives. Despite some overfitting during training, this model provides a balanced and robust approach to predicting employee attrition and is the best among the evaluated models.
+
+> Overall Conclusion
+
+Model 8.3.5 is the best model among those evaluated. It demonstrates strong performance across Accuracy, Recall, and Precision, making it the most effective for predicting employee attrition. This model strikes a good balance, providing reliable predictions and minimizing both false positives and negatives.
+
+> Business Question
+
+a. What is the breakdown of distance from home by job role and attrition?
+To answer this question, you should analyze the dataset by job role and attrition status to determine the distribution of distance from home. Typically, you would create a summary table or visualization that shows how distance from home varies by job role for employees who have left and those who have stayed. This analysis can reveal if certain job roles are associated with higher or lower distances from home and whether distance is related to attrition rates.
+
+b. How does the average monthly income compare across different education levels and attrition?
+To address this question, you should calculate the average monthly income for each education level and compare it between employees who have left and those who have stayed. This can be done by creating summary statistics or visualizations (e.g., bar charts) to show how income varies across different education levels and how it relates to attrition. This analysis will help identify if higher or lower income is associated with different education levels and whether it correlates with attrition.
+
+
+# 11. Dataset
+
+```{r echo=FALSE, warning=FALSE}
+employee <- read.csv("data_input/HRA.csv")
+datatable(var, options = list(
+  scrollX = TRUE, pageLength = 10))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
